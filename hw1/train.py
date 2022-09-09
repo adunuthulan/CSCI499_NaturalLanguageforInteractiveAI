@@ -1,13 +1,22 @@
+from cProfile import label
 import tqdm
 import torch
 import argparse
+import json
+import os
+import datetime
+import numpy as np
+import matplotlib.pyplot as plt
+from model import ActionTargetPredictor
 from sklearn.metrics import accuracy_score
+from torch.utils.data import TensorDataset, DataLoader
 
 from utils import (
     get_device,
     preprocess_string,
     build_tokenizer_table,
     build_output_tables,
+    encode_data,
 )
 
 
@@ -26,12 +35,38 @@ def setup_dataloader(args):
 
     # Hint: use the helper functions provided in utils.py
     # ===================================================== #
-    train_loader = None
-    val_loader = None
-    return train_loader, val_loader
+
+    print("Setting up dataloaders")
+
+    # Read in data
+    f = open(args.in_data_fn)
+    json_data = json.load(f)
+    train_samples = json_data['train']
+    val_samples = json_data['valid_seen']
+    
+    # Tokenize the training set
+    vocab_to_index, index_to_vocab, len_cutoff = build_tokenizer_table(train_samples)
+    actions_to_index, index_to_actions, targets_to_index, index_to_targets = build_output_tables(train_samples)
+
+    # flatten the samples
+    train_samples = [x for idx in range(len(train_samples)) for x in train_samples[idx]]
+    val_samples = [x for idx in range(len(val_samples)) for x in val_samples[idx]]
+
+    # Encode the training and validation set inputs/outputs.
+    train_np_x, train_np_y = encode_data(train_samples, vocab_to_index, len_cutoff, actions_to_index, targets_to_index)
+    train_dataset = TensorDataset(torch.from_numpy(train_np_x), torch.from_numpy(train_np_y))
+    val_np_x, val_np_y = encode_data(val_samples, vocab_to_index, len_cutoff, actions_to_index, targets_to_index)
+    val_dataset = TensorDataset(torch.from_numpy(val_np_x), torch.from_numpy(val_np_y))
+    
+    # Create data loaders
+    train_loader = DataLoader(train_dataset, shuffle=True, batch_size=args.batch_size)
+    val_loader = DataLoader(val_dataset, shuffle=True, batch_size=args.batch_size)
+
+    maps = {'v2i': vocab_to_index, 'i2v': index_to_vocab, 'len_cutoff': len_cutoff, 'a2i': actions_to_index, 'i2a':index_to_actions, 't2i': targets_to_index, 'i2t': index_to_targets}
+    return train_loader, val_loader, maps
 
 
-def setup_model(args):
+def setup_model(args, maps, device):
     """
     return:
         - model: YourOwnModelClass
@@ -39,7 +74,9 @@ def setup_model(args):
     # ================== TODO: CODE HERE ================== #
     # Task: Initialize your model.
     # ===================================================== #
-    model = None
+    print("Initializing model")
+
+    model = ActionTargetPredictor(device, len(maps['v2i']), args.emb_dim, args.hidden_size, len(maps['a2i']), len(maps['t2i']), 1, maps['len_cutoff'])
     return model
 
 
@@ -54,9 +91,13 @@ def setup_optimizer(args, model):
     # Task: Initialize the loss function for action predictions
     # and target predictions. Also initialize your optimizer.
     # ===================================================== #
-    action_criterion = None
-    target_criterion = None
-    optimizer = None
+    learning_rate = 0.0001
+    print(f"Setting up optimizer with lr=${learning_rate}")
+
+    action_criterion = torch.nn.CrossEntropyLoss()
+    target_criterion = torch.nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    # optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate)
 
     return action_criterion, target_criterion, optimizer
 
@@ -88,7 +129,7 @@ def train_epoch(
 
         # calculate the loss and train accuracy and perform backprop
         # NOTE: feel free to change the parameters to the model forward pass here + outputs
-        actions_out, targets_out = model(inputs, labels)
+        actions_out, targets_out = model(inputs)
 
         # calculate the action and target prediction loss
         # NOTE: we assume that labels is a tensor of size Bx2 where labels[:, 0] is the
@@ -114,8 +155,8 @@ def train_epoch(
         target_preds_ = targets_out.argmax(-1)
 
         # aggregate the batch predictions + labels
-        action_preds.extend(action_preds_.cpu().numpy())
-        target_preds.extend(target_preds_.cpu().numpy())
+        action_preds.extend(action_preds_.squeeze().cpu().numpy())
+        target_preds.extend(target_preds_.squeeze().cpu().numpy())
         action_labels.extend(labels[:, 0].cpu().numpy())
         target_labels.extend(labels[:, 1].cpu().numpy())
 
@@ -154,6 +195,9 @@ def train(args, model, loaders, optimizer, action_criterion, target_criterion, d
     # weights via backpropagation
     model.train()
 
+    train_metrics = {'al':[], 'tl':[], 'aa':[], 'ta':[]}
+    val_metrics = {'al':[], 'tl':[], 'aa':[], 'ta':[]}
+
     for epoch in tqdm.tqdm(range(args.num_epochs)):
 
         # train single epoch
@@ -172,6 +216,11 @@ def train(args, model, loaders, optimizer, action_criterion, target_criterion, d
             target_criterion,
             device,
         )
+
+        train_metrics['al'].append(train_action_loss)
+        train_metrics['tl'].append(train_target_loss)
+        train_metrics['aa'].append(train_action_acc)
+        train_metrics['ta'].append(train_target_acc)
 
         # some logging
         print(
@@ -195,12 +244,19 @@ def train(args, model, loaders, optimizer, action_criterion, target_criterion, d
                 device,
             )
 
+            val_metrics['al'].append(val_action_loss)
+            val_metrics['tl'].append(val_target_loss)
+            val_metrics['aa'].append(val_action_acc)
+            val_metrics['ta'].append(val_target_acc)
+
             print(
                 f"val action loss : {val_action_loss} | val target loss: {val_target_loss}"
             )
             print(
                 f"val action acc : {val_action_acc} | val target losaccs: {val_target_acc}"
             )
+        
+
 
     # ================== TODO: CODE HERE ================== #
     # Task: Implement some code to keep track of the model training and
@@ -208,6 +264,59 @@ def train(args, model, loaders, optimizer, action_criterion, target_criterion, d
     # 4 figures for 1) training loss, 2) training accuracy,
     # 3) validation loss, 4) validation accuracy
     # ===================================================== #
+
+    # training loss
+    x = [x for x in range(len(train_metrics["al"]))]
+    plt.subplot(2, 2, 1)
+    y = train_metrics["al"]
+    plt.scatter(x, y, c='coral', label='action loss')
+    y = train_metrics["tl"]
+    plt.scatter(x, y, c='lightblue', label='target loss')
+    plt.xlabel("epoch")
+    plt.ylabel("loss")
+    plt.title('Training Loss')
+    plt.legend()
+
+    # training accuracy
+    plt.subplot(2, 2, 2)
+    y = train_metrics["aa"]
+    plt.scatter(x, y, c='coral', label='action accuracy')
+    y = train_metrics["ta"]
+    plt.scatter(x, y, c='lightblue', label='target accuracy')
+    plt.xlabel("epoch")
+    plt.ylabel("accuracy")
+    plt.title('Training Accuracy')
+    plt.legend()
+
+    # val loss
+    x = [(epoch+1) * args.val_every for epoch in range(len(val_metrics["al"]))]
+
+    plt.subplot(2, 2, 3)
+    y = val_metrics["al"]
+    plt.scatter(x, y, c='coral', label='action loss')
+    plt.plot(x, y, c='coral')
+    y = val_metrics["tl"]
+    plt.scatter(x, y, c='lightblue', label='target loss')
+    plt.plot(x, y, c='lightblue')
+    plt.xlabel("epoch")
+    plt.ylabel("loss")
+    plt.title('Validation Loss')
+    plt.legend()
+
+    # val accuracy
+    plt.subplot(2, 2, 4)
+    y = val_metrics["aa"]
+    plt.scatter(x, y, c='coral', label='action accuracy')
+    plt.plot(x, y, c='coral')
+    y = val_metrics["ta"]
+    plt.scatter(x, y, c='lightblue', label='target accuracy')
+    plt.plot(x, y, c='lightblue')
+    plt.xlabel("epoch")
+    plt.ylabel("accuracy")
+    plt.title('Validation Accuracy')
+    plt.legend()
+
+    plt.savefig('results.png')
 
 
 def main(args):
@@ -238,6 +347,10 @@ def main(args):
         train(
             args, model, loaders, optimizer, action_criterion, target_criterion, device
         )
+        if not os.path.exists(args.model_output_dir):
+            os.makedirs(args.model_output_dir)
+        modelName = datetime.datetime.now().strftime("hw1_%m-%d-%Y_%H:%M:%S.pt")
+        torch.save(model, os.path.join(os.getcwd(), args.model_output_dir, modelName))
 
 
 if __name__ == "__main__":
@@ -251,15 +364,20 @@ if __name__ == "__main__":
     )
     parser.add_argument("--force_cpu", action="store_true", help="debug mode")
     parser.add_argument("--eval", action="store_true", help="run eval")
-    parser.add_argument("--num_epochs", default=1000, help="number of training epochs")
+    parser.add_argument("--num_epochs", type=int, default=1000, help="number of training epochs")
     parser.add_argument(
-        "--val_every", default=5, help="number of epochs between every eval loop"
+        "--val_every", type=int, default=5, help="number of epochs between every eval loop"
     )
 
     # ================== TODO: CODE HERE ================== #
     # Task (optional): Add any additional command line
     # parameters you may need here
     # ===================================================== #
+    parser.add_argument("--emb_dim", type=int, help="embedding dimension", required=True)
+    parser.add_argument("--hidden_size", type=int, help="hidden dimension", required=True)
+    # parser.add_argument("--word2vec", action="store_true", help="initialize embedding layer with pretrained embeddings")
+    # parser.add_argument("--word2vec_path", type=str, help="initialize embedding layer with pretrained embeddings from the given path")
+
     args = parser.parse_args()
 
     main(args)

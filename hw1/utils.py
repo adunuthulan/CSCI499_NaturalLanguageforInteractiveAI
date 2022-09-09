@@ -74,3 +74,41 @@ def build_output_tables(train):
     index_to_actions = {actions_to_index[a]: a for a in actions_to_index}
     index_to_targets = {targets_to_index[t]: t for t in targets_to_index}
     return actions_to_index, index_to_actions, targets_to_index, index_to_targets
+
+# adapted from lecture assignment
+def encode_data(data, v2i, seq_len, a2i, t2i):
+    n_samples = len(data)
+    x = np.zeros((n_samples, seq_len), dtype=np.int32)
+    y = np.zeros((n_samples, 2), dtype=np.int32)
+
+    idx = 0
+    n_early_cutoff = 0
+    n_unks = 0
+    n_tks = 0
+    for inst, outseq in data:
+        a, t = outseq
+        inst = preprocess_string(inst)
+        x[idx][0] = v2i["<start>"]
+        jdx = 1
+        for word in inst.split():
+            if len(word) > 0:
+                x[idx][jdx] = v2i[word] if word in v2i else v2i["<unk>"]
+                n_unks += 1 if x[idx][jdx] == v2i["<unk>"] else 0
+                n_tks += 1
+                jdx += 1
+                if jdx == seq_len - 1:
+                    n_early_cutoff += 1
+                    break
+        x[idx][jdx] = v2i["<end>"]
+        y[idx] = [a2i[a], t2i[t]]
+        idx += 1
+    print(
+        "INFO: had to represent %d/%d (%.4f) tokens as unk with vocab limit %d"
+        % (n_unks, n_tks, n_unks / n_tks, len(v2i))
+    )
+    print(
+        "INFO: cut off %d instances at len %d before true ending"
+        % (n_early_cutoff, seq_len)
+    )
+    print("INFO: encoded %d instances without regard to order" % idx)
+    return x, y
