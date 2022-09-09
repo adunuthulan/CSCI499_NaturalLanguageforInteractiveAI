@@ -38,19 +38,15 @@ class ActionTargetPredictor(torch.nn.Module):
     def forward(self, x):
 
         embeds = self.embedding(x)
-        # print("embeds:", embeds.size())
         embeds = embeds.view(-1, 1, self.emb_dim*self.len_cutoff) 
-        # print("embeds:", embeds.size())
-
         output, (hn, cn) = self.lstm(embeds) 
-        # print("output:", output.size(), " hn:", hn.size())
 
-        # hn = hn.view(-1, self.hidden_size) 
-        # out = self.fc_1(out)
-        # out = self.relu(out)
+        # out = self.fc_1(hn)
+        # out = self.relu(hn)
+        # action_out = self.action_fc(out)
+        # target_out = self.target_fc(out)
+        
         action_out = self.action_fc(hn)
         target_out = self.target_fc(hn)
-
-        # print(" action_out:", action_out.size(), " target_out:", target_out.size())
 
         return action_out, target_out

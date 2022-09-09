@@ -53,8 +53,10 @@ python train.py \
     --in_data_fn=lang_to_sem_data.json \
     --model_output_dir=experiments/lstm \
     --batch_size=1000 \
-    --num_epochs=100 \
+    --num_epochs=30 \
     --val_every=5 \
+    --emb_dim=128 \
+    --hidden_size=128 \
     --force_cpu 
 
 Evaluation:
@@ -62,8 +64,10 @@ python train.py \
     --in_data_fn=lang_to_sem_data.json \
     --model_output_dir=experiments/lstm \
     --batch_size=1000 \
-    --num_epochs=100 \
+    --num_epochs=30 \
     --val_every=5 \
+    --emb_dim=128 \
+    --hidden_size=128 \
     --force_cpu \
     --eval
 

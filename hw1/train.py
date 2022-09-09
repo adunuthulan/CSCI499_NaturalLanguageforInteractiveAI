@@ -270,8 +270,10 @@ def train(args, model, loaders, optimizer, action_criterion, target_criterion, d
     plt.subplot(2, 2, 1)
     y = train_metrics["al"]
     plt.scatter(x, y, c='coral', label='action loss')
+    plt.plot(x, y, c='coral')
     y = train_metrics["tl"]
     plt.scatter(x, y, c='lightblue', label='target loss')
+    plt.plot(x, y, c='lightblue')
     plt.xlabel("epoch")
     plt.ylabel("loss")
     plt.title('Training Loss')
@@ -281,8 +283,10 @@ def train(args, model, loaders, optimizer, action_criterion, target_criterion, d
     plt.subplot(2, 2, 2)
     y = train_metrics["aa"]
     plt.scatter(x, y, c='coral', label='action accuracy')
+    plt.plot(x, y, c='coral')
     y = train_metrics["ta"]
     plt.scatter(x, y, c='lightblue', label='target accuracy')
+    plt.plot(x, y, c='lightblue')
     plt.xlabel("epoch")
     plt.ylabel("accuracy")
     plt.title('Training Accuracy')
@@ -316,7 +320,7 @@ def train(args, model, loaders, optimizer, action_criterion, target_criterion, d
     plt.title('Validation Accuracy')
     plt.legend()
 
-    plt.savefig('results.png')
+    plt.savefig(f'results-{args.num_epochs}-{args.emb_dim}-{args.hidden_size}.png')
 
 
 def main(args):
@@ -375,8 +379,8 @@ if __name__ == "__main__":
     # ===================================================== #
     parser.add_argument("--emb_dim", type=int, help="embedding dimension", required=True)
     parser.add_argument("--hidden_size", type=int, help="hidden dimension", required=True)
-    # parser.add_argument("--word2vec", action="store_true", help="initialize embedding layer with pretrained embeddings")
-    # parser.add_argument("--word2vec_path", type=str, help="initialize embedding layer with pretrained embeddings from the given path")
+    # parser.add_argument("--glove", action="store_true", help="initialize embedding layer with pretrained embeddings")
+    # parser.add_argument("--glove_path", type=str, help="initialize embedding layer with pretrained embeddings from the given path")
 
     args = parser.parse_args()
 
