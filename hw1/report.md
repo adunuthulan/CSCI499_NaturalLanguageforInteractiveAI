@@ -1,5 +1,7 @@
 ## Run the program
-```python train.py \
+First follow the instructions in the README to set up the environment. Then run the following command:
+```
+python train.py \
     --in_data_fn=lang_to_sem_data.json \
     --model_output_dir=experiments/lstm \
     --batch_size=1000 \
