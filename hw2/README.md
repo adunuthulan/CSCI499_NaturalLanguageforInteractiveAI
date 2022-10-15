@@ -36,11 +36,19 @@ Train:
 python3 train.py \
     --analogies_fn analogies_v3000_1309.json \
     --data_dir books/ \
+    --batch_size 128 \
+    --emb_dim 128 \
+    --window 4 \
+    --output_dir outputs/4
 
 Evaluation:
 python train.py \
     --analogies_fn analogies_v3000_1309.json \
     --data_dir books/ \
+    --batch_size 128 \
+    --emb_dim 128 \
+    --window 4 \
+    --output_dir outputs/4 \
     --downstream_eval
 
 # add any additional argments you may need

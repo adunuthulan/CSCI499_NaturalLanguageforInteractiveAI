@@ -82,6 +82,7 @@ def build_tokenizer_table(train, vocab_size):
         vocab_to_index,
         index_to_vocab,
         int(np.max(padded_lens)),  # we don't need a cutoff for vanilla LM
+        corpus_,
     )
 
 

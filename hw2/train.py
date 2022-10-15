@@ -1,6 +1,7 @@
 import argparse
 import os
 import tqdm
+from model import SkipGram
 import torch
 from sklearn.metrics import accuracy_score
 
@@ -8,6 +9,10 @@ from eval_utils import downstream_validation
 import utils
 import data_utils
 
+import numpy as np
+from torch.utils.data import TensorDataset, DataLoader
+import random
+import matplotlib.pyplot as plt
 
 def setup_dataloader(args):
     """
@@ -17,13 +22,14 @@ def setup_dataloader(args):
     """
 
     # read in training data from books dataset
-    sentences = data_utils.process_book_dir(args.books_dir)
+    sentences = data_utils.process_book_dir(args.data_dir)
 
     # build one hot maps for input and output
     (
         vocab_to_index,
         index_to_vocab,
         suggested_padding_len,
+        corpus
     ) = data_utils.build_tokenizer_table(sentences, vocab_size=args.vocab_size)
 
     # create encoded input and output numpy matrices for the entire dataset and then put them into tensors
@@ -45,12 +51,62 @@ def setup_dataloader(args):
     # dataloaders.
     # ===================================================== #
 
-    train_loader = None
-    val_loader = None
-    return train_loader, val_loader
+    # create input/output pairs using window size for Skip-Gram
+    print("Creating input/output pairs...")
+
+    window = args.window
+    input_words = []
+    contexts = []
+
+    for sent in encoded_sentences:
+        for i, w in enumerate(sent):
+            if w == 0: break # if you reach the end of the sentence stop creating pairs
+            ctx = []
+            for c in range(1, window+1):
+                if (i+c < len(sent)):
+                    ctx.append(sent[i+c])
+                if (i-c > 0):
+                    ctx.append(sent[i-c])
+            input_words.append(w)
+            contexts.append(ctx)
+
+    print("Generated ", len(input_words), " samples....")
+
+    # train/val split
+    prop_train = 0.8
+    idxs = set(range(len(input_words)))
+    train_idxs = set(random.sample(idxs, int(len(input_words)*prop_train + 0.5)))
+    val_idxs = idxs - train_idxs
+    
+    train_np_x = np.zeros(len(train_idxs))
+    train_np_y = np.zeros((len(train_idxs), 2*window))
+    val_np_x = np.zeros(len(val_idxs))
+    val_np_y = np.zeros((len(val_idxs), 2*window))
+    
+    for i, idx in enumerate(train_idxs):
+        train_np_x[i] = input_words[idx]
+        for j, ctx in enumerate(contexts[idx]):
+            train_np_y[i][j] = ctx
+    for i, idx in enumerate(val_idxs):
+        val_np_x[i] = input_words[idx]
+        for j, ctx in enumerate(contexts[idx]):
+            val_np_y[i][j] = ctx
+
+    print("split samples into", len(train_np_x), "training and", len(val_np_x),"validation...")
+    
+    # create dataloaders
+    train_dataset = TensorDataset(torch.from_numpy(train_np_x), torch.from_numpy(train_np_y))
+    val_dataset = TensorDataset(torch.from_numpy(val_np_x), torch.from_numpy(val_np_y))
+
+    train_loader = DataLoader(train_dataset, shuffle=True, batch_size=args.batch_size)
+    val_loader = DataLoader(val_dataset, shuffle=True, batch_size=args.batch_size)
+    
+    print("Finished input/output pairs!")
+
+    return train_loader, val_loader, len(train_np_y), index_to_vocab
 
 
-def setup_model(args):
+def setup_model(args, num_labels):
     """
     return:
         - model: YourOwnModelClass
@@ -58,7 +114,7 @@ def setup_model(args):
     # ================== TODO: CODE HERE ================== #
     # Task: Initialize your CBOW or Skip-Gram model.
     # ===================================================== #
-    model = None
+    model = SkipGram(args.vocab_size, args.emb_dim)
     return model
 
 
@@ -72,8 +128,11 @@ def setup_optimizer(args, model):
     # Task: Initialize the loss function for predictions. 
     # Also initialize your optimizer.
     # ===================================================== #
-    criterion = None
-    optimizer = None
+    learning_rate = 0.0001
+
+    criterion = torch.nn.BCEWithLogitsLoss()
+    # criterion = torch.nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     return criterion, optimizer
 
 
@@ -90,21 +149,31 @@ def train_epoch(
     epoch_loss = 0.0
 
     # keep track of the model predictions for computing accuracy
-    pred_labels = []
-    target_labels = []
+    correct_preds = 0
+    total_preds = 0
 
     # iterate over each batch in the dataloader
     # NOTE: you may have additional outputs from the loader __getitem__, you can modify this
     for (inputs, labels) in tqdm.tqdm(loader):
+        
         # put model inputs to device
-        inputs, labels = inputs.to(device).long(), labels.to(device).long()
+        inputs = inputs.to(device).long()
 
         # calculate the loss and train accuracy and perform backprop
         # NOTE: feel free to change the parameters to the model forward pass here + outputs
-        pred_logits = model(inputs, labels)
+        pred_logits = model(inputs)
+
+        # turn labels into multihot encoding
+        l = np.zeros((inputs.size(0), args.vocab_size))
+        for i, batch in enumerate(labels):
+            for ctx in batch:
+                l[i, int(ctx.item())] = 1
+
+        multihot_labels = torch.from_numpy(l) 
+        multihot_labels = multihot_labels.to(device).float()
 
         # calculate prediction loss
-        loss = criterion(pred_logits.squeeze(), labels)
+        loss = criterion(pred_logits.squeeze().float(), multihot_labels)
 
         # step optimizer and compute gradients during training
         if training:
@@ -115,12 +184,15 @@ def train_epoch(
         # logging
         epoch_loss += loss.item()
 
-        # compute metrics
-        preds = pred_logits.argmax(-1)
-        pred_labels.extend(preds.cpu().numpy())
-        target_labels.extend(labels.cpu().numpy())
-
-    acc = accuracy_score(pred_labels, target_labels)
+        # avg metric using top 2*C
+        w = args.window * -2
+        ind = np.argpartition(pred_logits.detach().numpy(), w)[:, w:]
+        labels = labels.numpy()
+        for i in range(len(labels)): 
+            correct_preds += len(np.intersect1d(ind[i], labels[i]))
+            total_preds += len(ind[i])
+        
+    acc = correct_preds / total_preds
     epoch_loss /= len(loader)
 
     return epoch_loss, acc
@@ -152,21 +224,23 @@ def main(args):
     external_val_analogies = utils.read_analogies(args.analogies_fn)
 
     if args.downstream_eval:
-        word_vec_file = os.path.join(args.outputs_dir, args.word_vector_fn)
+        word_vec_file = os.path.join(args.output_dir, args.word_vector_fn)
         assert os.path.exists(word_vec_file), "need to train the word vecs first!"
         downstream_validation(word_vec_file, external_val_analogies)
         return
 
     # get dataloaders
-    train_loader, val_loader = setup_dataloader(args)
+    train_loader, val_loader, num_labels, i2v = setup_dataloader(args)
     loaders = {"train": train_loader, "val": val_loader}
 
     # build model
-    model = setup_model(args)
+    model = setup_model(args, num_labels)
     print(model)
 
     # get optimizer
     criterion, optimizer = setup_optimizer(args, model)
+
+    metrics = {'tl':[], 'vl':[], 'ta':[], 'va':[]}
 
     for epoch in range(args.num_epochs):
         # train model for a single epoch
@@ -181,6 +255,8 @@ def main(args):
         )
 
         print(f"train loss : {train_loss} | train acc: {train_acc}")
+        metrics["tl"].append(train_loss)
+        metrics["ta"].append(train_acc)
 
         if epoch % args.val_every == 0:
             val_loss, val_acc = validate(
@@ -192,6 +268,8 @@ def main(args):
                 device,
             )
             print(f"val loss : {val_loss} | val acc: {val_acc}")
+            metrics["vl"].append(val_loss)
+            metrics["va"].append(val_acc)
 
             # ======================= NOTE ======================== #
             # Saving the word vectors to disk and running the eval
@@ -203,7 +281,7 @@ def main(args):
             # ===================================================== #
 
             # save word vectors
-            word_vec_file = os.path.join(args.outputs_dir, args.word_vector_fn)
+            word_vec_file = os.path.join(args.output_dir, args.word_vector_fn)
             print("saving word vec to ", word_vec_file)
             utils.save_word2vec_format(word_vec_file, model, i2v)
 
@@ -216,6 +294,56 @@ def main(args):
             print("saving model to ", ckpt_file)
             torch.save(model, ckpt_file)
 
+    gen_figs(metrics)
+
+def gen_figs(metrics):
+    x = [x for x in range(len(metrics["tl"]))]
+
+    # training loss
+    y = metrics["tl"]
+    plt.scatter(x, y, c='lightblue', label='target loss')
+    plt.plot(x, y, c='lightblue')
+    plt.xlabel("epoch")
+    plt.ylabel("loss")
+    plt.title('Training Loss')
+    plt.legend()
+    plt.savefig(f'training_loss.png')
+    plt.show()
+
+    # training accuracy
+    y = metrics["ta"]
+    plt.scatter(x, y, c='lightblue', label='target accuracy')
+    plt.plot(x, y, c='lightblue')
+    plt.xlabel("epoch")
+    plt.ylabel("accuracy")
+    plt.title('Training Accuracy')
+    plt.legend()
+    plt.savefig(f'training_acc.png')
+    plt.show()
+
+    x = [(epoch+1) * args.val_every for epoch in range(len(metrics["vl"]))]
+
+    # val loss
+    y = metrics["vl"]
+    plt.scatter(x, y, c='lightblue', label='validation loss')
+    plt.plot(x, y, c='lightblue')
+    plt.xlabel("epoch")
+    plt.ylabel("loss")
+    plt.title('Validation Loss')
+    plt.legend()
+    plt.savefig(f'validation_loss.png')
+    plt.show()
+
+    # val accuracy
+    y = metrics["va"]
+    plt.scatter(x, y, c='lightblue', label='validation accuracy')
+    plt.plot(x, y, c='lightblue')
+    plt.xlabel("epoch")
+    plt.ylabel("accuracy")
+    plt.title('Validation Accuracy')
+    plt.legend()
+    plt.savefig(f'validation_acc.png')
+    plt.show()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -267,6 +395,8 @@ if __name__ == "__main__":
     # Task (optional): Add any additional command line
     # parameters you may need here
     # ===================================================== #
+    parser.add_argument("--emb_dim", type=int, help="embedding dimension", required=True)
+    parser.add_argument("--window", type=int, help="window size", required=True)
 
     args = parser.parse_args()
     main(args)
