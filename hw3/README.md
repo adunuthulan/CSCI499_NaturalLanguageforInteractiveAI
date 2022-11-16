@@ -55,8 +55,11 @@ python train.py \
     --in_data_fn=lang_to_sem_data.json \
     --model_output_dir=experiments/s2s \
     --batch_size=1000 \
-    --num_epochs=100 \
-    --val_every=5 \
+    --num_epochs=4 \
+    --val_every=3 \
+    --emb_dim=128 \
+    --hidden_size=128 \
+    --mode=transformer \
     --force_cpu 
 
 Evaluation:
@@ -66,6 +69,8 @@ python train.py \
     --batch_size=1000 \
     --num_epochs=100 \
     --val_every=5 \
+    --emb_dim=128 \
+    --hidden_size=128 \
     --force_cpu \
     --eval
 
