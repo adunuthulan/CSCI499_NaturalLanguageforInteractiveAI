@@ -36,6 +36,8 @@ The Transformer implementation I made predicted the pad token particularly often
 
 I also wanted to see if the transformer was able to perform the task in parallel, and perform it faster than the LSTM based seq2seq model implementations. I tried running the LSTM and the Transformer implementations with a train/val size of 800/200. The LSTM implementation would result in my computer terminating the process, whereas the Transformer implementation actually completed, and ran the epochs faster. 
 
+Attention appears to have performed the best in terms of accuracy.
+
 Seeing how the accuracy remained similar over the runs for the Transformer, I am pretty confident it isn't learning well, or is just predicting the padding token. 
 
 ## Figures
